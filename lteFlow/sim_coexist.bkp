@@ -1,0 +1,436 @@
+#include <iostream>
+#include <fstream>
+#include <string>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <vector>
+#include <iostream>
+#include <random>
+#include <time.h>
+
+#include "ns3/core-module.h"
+#include "ns3/lte-helper.h"
+#include "ns3/network-module.h"
+#include "ns3/lte-module.h"
+#include "ns3/epc-helper.h"
+#include "ns3/config-store.h"
+#include "ns3/csma-module.h"
+#include "ns3/wifi-module.h"
+#include "ns3/mobility-module.h"
+#include "ns3/applications-module.h"
+#include "ns3/internet-module.h"
+#include "ns3/flow-monitor-module.h"
+#include "ns3/spectrum-module.h"
+#include "myApps.h"
+
+NS_LOG_COMPONENT_DEFINE ("newNs3TrafficModule");
+
+using namespace ns3;
+
+double* randgen(float lambda){
+	static double poisson_arr[10];
+        std::default_random_engine generator;
+        std::exponential_distribution<double> distribution(lambda);
+
+        for (int i=0; i<20; ++i) {
+                double number = distribution(generator); // + x;
+                //printf("\n NUmber generated : %f ", number);
+		poisson_arr[i] = number;
+        }
+	return poisson_arr;
+}
+
+static void
+CwndChange (uint32_t oldCwnd, uint32_t newCwnd)
+{
+  std::cout << Simulator::Now ().GetSeconds () << "\t" << newCwnd <<"\n";
+}
+
+void
+IncRate (Ptr<MyApp> app, DataRate rate)
+{
+        app->ChangeRate(rate);
+    return;
+}
+
+void
+ReceivePacket(Ptr<Packet> p,  Address &addr)
+{
+ 	SeqTsHeader seqTsx;
+        p->RemoveHeader (seqTsx);
+	int currentSequenceNumber = (int)seqTsx.GetSeq ();
+	char application[20]="";
+
+	if(InetSocketAddress::ConvertFrom(addr).GetIpv4().Get() == Ipv4Address("10.1.1.2").Get())
+		strcpy(application, "Youtube: ");
+	else if(InetSocketAddress::ConvertFrom(addr).GetIpv4().Get() == Ipv4Address("10.1.1.3").Get())
+		strcpy(application, "Skype: ");
+	else if(InetSocketAddress::ConvertFrom(addr).GetIpv4().Get() == Ipv4Address("10.1.1.4").Get())
+		strcpy(application, "Vid: ");
+	else if(InetSocketAddress::ConvertFrom(addr).GetIpv4().Get() == Ipv4Address("10.1.1.5").Get())
+		strcpy(application, "FTP: ");
+	else
+		strcpy(application, "FTPx: ");
+
+        std::cout << "RECEIVE:" << Simulator::Now ().GetSeconds () << "\t" << application << "\t" << currentSequenceNumber << "\t" << p->GetSize() <<"\t" << " from " << InetSocketAddress::ConvertFrom(addr).GetIpv4 () << "  at port : " << InetSocketAddress::ConvertFrom(addr).GetPort() <<"\n" ;
+}
+
+
+/*****************/
+void
+RcvPktTrace(){
+	Config::ConnectWithoutContext("/NodeList/0/ApplicationList/*/$ns3::PacketSink/Rx", MakeCallback (&ReceivePacket));	
+}
+
+int
+main (int argc, char *argv[])
+{
+
+  LogComponentEnable("newNs3TrafficModule", LOG_LEVEL_ALL);
+
+  FILE *fp = fopen("/Users/sabur/Documents/youtube_trace.csv", "r");
+  FILE *fv = fopen("/Users/sabur/Documents/skype_video_trace.csv", "r");
+  FILE *fv2 = fopen("/Users/sabur/Documents/serenity_vid_trace.csv", "r");
+  //FILE *ff = fopen("/Users/sabur/Documents/web_ftp_trace.csv", "r");
+
+  uint32_t nUE = 4;
+  std::string cntdatarate = "100Mbps";
+  double cntdelay = 0.001;
+  //uint32_t downlinkbw = 25;
+  uint32_t rlcbuffersize = 300000;
+  //std::string macRate="OfdmRate9Mbps";
+  std::string macRate="OfdmRate6Mbps";
+  int num_ftp=0;
+  float lmd=3.0;
+  double *poisson_arrival;
+  double ftp_arr;
+  double *posarr;
+  
+  // Adding Command line arguments here.
+  // Use $ ./waf --run "scratch/mysecond --PrintHelp" to see help.
+  // For example: $ ./waf --run "scratch/mysecond --nCsma=100 --nUE=10"
+  CommandLine cmd;
+  cmd.AddValue ("nUE", "Number of wifi STA devices", nUE);
+  cmd.AddValue ("lambda", "Number of wifi STA devices", lmd);
+  cmd.Parse (argc, argv);
+
+
+  Config::SetDefault ("ns3::TcpSocket::SegmentSize", UintegerValue (1460));
+
+  // Explicitly create the nodes required by the topology
+  NodeContainer enbNodes;
+  enbNodes.Create(1);
+  NodeContainer enbNode = enbNodes.Get (0);
+
+  NS_LOG_INFO ("Create nodes.");
+  NodeContainer ueNodes;
+  ueNodes.Create (nUE);
+
+  // **********  Configure the Mobility model for all the nodes  **********/
+  MobilityHelper mobility;
+  mobility.SetMobilityModel ("ns3::ConstantPositionMobilityModel");
+  mobility.Install (enbNodes);
+  mobility.SetMobilityModel ("ns3::ConstantPositionMobilityModel");
+  mobility.Install (ueNodes);
+
+
+  //eNodeB physical layer parameters
+  Config::SetDefault("ns3::LteEnbPhy::TxPower", DoubleValue(30.0));
+  //Config::SetDefault("ns3::LteEnbNetDevice::UlBandwidth", UintegerValue(50));
+
+
+  //LTE MAC layer parameters
+  Config::SetDefault ("ns3::LteSpectrumPhy::DataErrorModelEnabled", BooleanValue (true));
+
+  
+  //LTE MAC layer parameters
+  Config::SetDefault ("ns3::LteSpectrumPhy::DataErrorModelEnabled", BooleanValue (true));
+
+  //Config::SetDefault ("ns3::RrFfMacScheduler::HarqEnabled", BooleanValue (true));
+  Config::SetDefault ("ns3::PfFfMacScheduler::HarqEnabled", BooleanValue (true));
+  Config::SetDefault ("ns3::PfFfMacScheduler::CqiTimerThreshold", UintegerValue (10));
+  Config::SetDefault ("ns3::FdMtFfMacScheduler::CqiTimerThreshold", UintegerValue (10));
+  Config::SetDefault ("ns3::FdMtFfMacScheduler::HarqEnabled", BooleanValue (true));
+
+  Config::SetDefault ("ns3::LteEnbRrc::EpsBearerToRlcMapping",  EnumValue(LteEnbRrc::RLC_AM_ALWAYS));
+
+  Config::SetDefault ("ns3::LteAmc::AmcModel",  EnumValue(LteAmc::PiroEW2010));
+
+  //Set the  parameters of the S1u interface
+  Config::SetDefault("ns3::EpcHelper::S1uLinkDelay", TimeValue(Seconds(cntdelay)));
+  Config::SetDefault("ns3::EpcHelper::S1uLinkDataRate",DataRateValue(DataRate(cntdatarate)));
+
+  //Set the parameteres if the X2 interface
+  Config::SetDefault("ns3::EpcHelper::X2LinkDelay", TimeValue(Seconds(0.020)));
+  Config::SetDefault("ns3::EpcHelper::X2LinkDataRate", DataRateValue (DataRate("10Mbps")));
+
+  //Config::SetDefault("ns3::LteEnbNetDevice::DlBandwidth", UintegerValue(downlinkbw));
+  Config::SetDefault ("ns3::LteRlcUm::MaxTxBufferSize",  UintegerValue(rlcbuffersize));
+
+
+  Ptr<LteHelper> lteHelper = CreateObject<LteHelper> ();
+  NS_LOG_INFO("Created the LTE Helper");
+
+  lteHelper->SetSchedulerType("ns3::PfFfMacScheduler");
+  //Pathloss Models
+  lteHelper->SetAttribute ("PathlossModel", StringValue ("ns3::FriisPropagationLossModel"));
+  lteHelper->SetPathlossModelType("ns3::FriisPropagationLossModel");
+  
+  lteHelper->SetFadingModel("ns3::TraceFadingLossModel");
+  lteHelper->SetFadingModelAttribute ("TraceFilename", StringValue ("../src/lte/model/fading-traces/fading_trace_EVA_60kmph.fad"));
+  // these parameters have to be set only in case of the trace format
+	  // differs from the standard one, that is
+	  // - 10 seconds length trace
+	  // - 10,000 samples
+	  // - 0.5 seconds for window size
+	  // - 100 RB
+	  lteHelper->SetFadingModelAttribute ("TraceLength", TimeValue (Seconds (10.0)));
+	  lteHelper->SetFadingModelAttribute ("SamplesNum", UintegerValue (10000));
+	  lteHelper->SetFadingModelAttribute ("WindowSize", TimeValue (Seconds (0.5)));
+	  lteHelper->SetFadingModelAttribute ("RbNum", UintegerValue (100));
+  NS_LOG_INFO("Set the parameters of the LTE network");
+
+  NetDeviceContainer enbDevices;
+  lteHelper->SetEnbDeviceAttribute("DlBandwidth", UintegerValue(50));
+  enbDevices = lteHelper->InstallEnbDevice(enbNode);
+
+  NetDeviceContainer ueDevices;
+  ueDevices = lteHelper->InstallUeDevice (ueNodes);
+
+
+  InternetStackHelper internet;
+  internet.Install (enbNode);
+  internet.Install (ueNodes);
+
+  NS_LOG_INFO ("Create channels.");
+
+
+  //Assign IP address to the interfaces
+  NS_LOG_INFO ("Assign IP Addresses.");
+  Ipv4AddressHelper ipv4;
+  ipv4.SetBase ("10.1.1.0", "255.255.255.0");
+  Ipv4InterfaceContainer ifAp = ipv4.Assign (enbDevices);  
+  Ipv4InterfaceContainer ifSta = ipv4.Assign (ueDevices);  
+
+
+  NS_LOG_INFO ("Enable static global routing.");
+  Ipv4GlobalRoutingHelper::PopulateRoutingTables ();
+  /******************************************/
+
+  printf("\n !!!!!!!!!! DEBUGGGGGGGGGGGGGG !!!!!!!!!!!!!\n");
+
+
+
+  NS_LOG_INFO ("Create Applications.");
+
+  ApplicationContainer sinkApps;
+
+/*****************************************/
+
+  // TCP connfection from sta1 to AP
+  uint16_t sinkPort = 8080;
+  Address sinkAddress (InetSocketAddress (ifAp.GetAddress (0), sinkPort)); // interface of Access point
+  PacketSinkHelper packetSinkHelper ("ns3::TcpSocketFactory", InetSocketAddress (Ipv4Address::GetAny (), sinkPort));
+  sinkApps = packetSinkHelper.Install (enbNode); // AP as sink
+  sinkApps.Start (Seconds (0.));
+  sinkApps.Stop (Seconds (30.));
+
+  Ptr<Socket> ns3TcpSocket = Socket::CreateSocket (ueNodes.Get (0), TcpSocketFactory::GetTypeId ()); //source at sta1
+  
+  // Trace Congestion window
+  ns3TcpSocket->TraceConnectWithoutContext ("CongestionWindow", MakeCallback (&CwndChange));
+
+  // Create TCP application at sta1
+  Ptr<MyApp> app = CreateObject<MyApp> (fp);
+  app->Setup (ns3TcpSocket, sinkAddress, 1500, 10000, DataRate ("11Mbps"));
+  ueNodes.Get (0)->AddApplication (app);
+  app->SetStartTime (Seconds (1.));
+  app->SetStopTime (Seconds (30.));
+
+
+   // UDP Video connfection from sta2 to AP
+  
+  ApplicationContainer sinkApps2;
+  uint16_t sinkPort2 = 6;
+  Address sinkAddress2 (InetSocketAddress (ifAp.GetAddress (0), sinkPort2)); // interface of AP
+  PacketSinkHelper packetSinkHelper2 ("ns3::UdpSocketFactory", InetSocketAddress (Ipv4Address::GetAny (), sinkPort2));
+  sinkApps2 = packetSinkHelper2.Install (enbNode); //AP as sink
+  sinkApps2.Start (Seconds (0.));
+  sinkApps2.Stop (Seconds (30.));
+
+  Ptr<Socket> ns3UdpSocket = Socket::CreateSocket (ueNodes.Get (1), UdpSocketFactory::GetTypeId ()); //source at sta2
+  
+  // Create UDP application at sta2
+  Ptr<MyVidApp> app2 = CreateObject<MyVidApp> (fv);
+  app2->SetupVid (ns3UdpSocket, sinkAddress2, 1524, 10000, DataRate ("11Mbps"), 1);
+  ueNodes.Get (1)->AddApplication (app2);
+  app2->SetStartTime (Seconds (1.));
+  app2->SetStopTime (Seconds (30.));
+
+
+   // UDP Video connfection from sta3 to AP
+  
+  ApplicationContainer sinkApps3;
+  uint16_t sinkPort3 = 7;
+  Address sinkAddress3 (InetSocketAddress (ifAp.GetAddress (0), sinkPort3)); // interface of AP
+  PacketSinkHelper packetSinkHelper3 ("ns3::UdpSocketFactory", InetSocketAddress (Ipv4Address::GetAny (), sinkPort3));
+  sinkApps3 = packetSinkHelper3.Install (enbNode); // AP as sink
+  sinkApps3.Start (Seconds (0.));
+  sinkApps3.Stop (Seconds (30.));
+
+  Ptr<Socket> ns3UdpSocket3 = Socket::CreateSocket (ueNodes.Get (2), UdpSocketFactory::GetTypeId ()); //source at sta3
+  
+  // Create UDP application at sta3
+  Ptr<MyVidApp> app3 = CreateObject<MyVidApp> (fv2);
+  app3->SetupVid (ns3UdpSocket3, sinkAddress3, 1524, 10000, DataRate ("11Mbps"), 2);
+  ueNodes.Get (2)->AddApplication (app3);
+  app3->SetStartTime (Seconds (1.));
+  app3->SetStopTime (Seconds (30.));
+
+  num_ftp = nUE - 3;
+  //num_ftp = 2;
+
+  srand(time(NULL));
+  int r = 1+rand()%10;
+  float x=1/(r+lmd);
+  ftp_arr=0;
+  float ftp_node_start=x;
+
+/*
+  for(int i=1; i<=num_ftp; i++){
+	int v=rand()%10;
+	printf("\n ###### Random Number = %d ######\n", v);
+	printf("\n ftp_arr = %f \n ", ftp_arr);
+	ftp_arr=x;
+	ftp_node_start = ftp_node_start + (*(poisson_arrival+v) * 10);
+	printf("\n ftp_node_start[%d] = %f \n ",i, ftp_node_start);
+	poisson_arrival = randgen(lmd);
+	for (int k=0; k<10; k++)
+		printf("\n \t poisson_aarival[%d] = %f", k, *(poisson_arrival+k) + x);
+  	// TCP web FTP connection from sta4 to N1
+  	ApplicationContainer sinkApp;
+  	uint16_t sinkPt = 8020 + i;
+  	Address sinkAddr (InetSocketAddress (ifAp.GetAddress (0), sinkPt)); // interface of AP
+  	PacketSinkHelper packetSinkHelper4 ("ns3::TcpSocketFactory", InetSocketAddress (Ipv4Address::GetAny (), sinkPt));
+  	sinkApp = packetSinkHelper4.Install (enbNode); // AP as sink
+  	sinkApp.Start (Seconds (1.));
+  	sinkApp.Stop (Seconds (30.));
+
+  	Ptr<Socket> ns3TcpSocket4 = Socket::CreateSocket (ueNodes.Get (3+i-1), TcpSocketFactory::GetTypeId ()); //source at sta4
+  	// Trace Congestion window
+  	ns3TcpSocket4->TraceConnectWithoutContext ("CongestionWindow", MakeCallback (&CwndChange));
+
+  	FILE *ff = fopen("/Users/sabur/Documents/web_ftp_trace.csv", "r");
+  	// Create TCP application at sta4
+  	Ptr<MyFtpApp> app4 = CreateObject<MyFtpApp> (ff);
+  	app4->SetupFtp (ns3TcpSocket4, sinkAddr, 1500, 10000, DataRate ("11Mbps"));
+  	ueNodes.Get (3+i-1)->AddApplication (app4);
+  	app4->SetStartTime (Seconds (ftp_arr));
+  	app4->SetStopTime (Seconds (30.));
+
+	ftp_arr = ftp_arr + *(poisson_arrival+1);
+}*/
+
+printf("**** NUM FTP = %d **** \n", num_ftp);
+for (int k=0; k<num_ftp; k++){
+	printf("**** ITERATION for FTP node = %d **** \n", k+1);
+	int v=rand()%10;
+	posarr = randgen(1.0);
+        printf("\n ###### Random Number = %d ######\n", v);
+	poisson_arrival = randgen(lmd);
+
+	ftp_arr = ftp_node_start;
+	printf("\n ------- NODE start time = %f ________\n", ftp_arr);
+	for(int i=0; /*i<5*/ ftp_arr<30.0 ; i++){ 
+
+	ApplicationContainer sinkApp;
+	uint16_t sinkPt = 123+k;
+	Address sinkAddr (InetSocketAddress (ifAp.GetAddress (0), sinkPt)); // interface of AP
+        PacketSinkHelper packetSinkHelper4 ("ns3::TcpSocketFactory", InetSocketAddress (Ipv4Address::GetAny (), sinkPt));
+        sinkApp = packetSinkHelper4.Install (enbNode); // AP as sink
+	sinkApp.Start (Seconds (0.));
+        sinkApp.Stop (Seconds (30.));
+
+	Ptr<Socket> ns3TcpSocket4 = Socket::CreateSocket (ueNodes.Get (3+k), TcpSocketFactory::GetTypeId ()); //source at sta4
+	ns3TcpSocket4->TraceConnectWithoutContext ("CongestionWindow", MakeCallback (&CwndChange));
+
+	FILE *ff = fopen("/Users/sabur/Documents/web_ftp_trace.csv", "r");
+        // Create TCP application at sta4
+        Ptr<MyFtpApp> app4 = CreateObject<MyFtpApp> (ff);
+        app4->SetupFtp (ns3TcpSocket4, sinkAddr, 1500, 10000, DataRate ("11Mbps"), ((k+1)*100)+i);
+        ueNodes.Get (3+k)->AddApplication (app4);
+	printf("#### FTP node = %d is starting at %f #### \n", k+1, (1+ftp_arr));
+        app4->SetStartTime (Seconds (1. +ftp_arr));
+        app4->SetStopTime (Seconds (5.));
+
+
+	ftp_arr = ftp_arr + 5 + *(poisson_arrival+i);
+	}
+	//ftp_node_start = ftp_node_start + (*(poisson_arrival+v));
+	ftp_node_start = (*(posarr+v));
+}
+
+/*****************************************/
+
+  // Trace Received Packets
+  //Config::ConnectWithoutContext("/NodeList/1/ApplicationList/0/$ns3::PacketSink/Rx", MakeCallback (&ReceivePacket));
+
+
+  //AsciiTraceHelper ascii;
+  //csma.EnableAscii(ascii.CreateFileStream ("app_traffic_trace.tr"), d0d1);
+  //csma.EnablePcap ("app_traffic_trace_tcp", d0d1);
+  //csma.EnablePcap ("app_traffic_trace_udp", d2d1);
+  //csma.EnablePcap ("app_traffic_trace_ftp", d3d1);
+
+  // Flow Monitor
+  Ptr<FlowMonitor> flowmon;
+      FlowMonitorHelper flowmonHelper;
+      flowmon = flowmonHelper.InstallAll ();
+
+    Simulator::Schedule(Seconds(1.001), RcvPktTrace);
+
+  printf("\n !!!!!!!!!! DEBUG22222222222222222222 !!!!!!!!!!!!!\n");
+// Now, do the actual simulation
+  
+  NS_LOG_INFO ("Run Simulation");
+  Simulator::Stop (Seconds(30.0));
+  Simulator::Run ();
+	  
+  flowmon->CheckForLostPackets ();
+
+  Ptr<Ipv4FlowClassifier> classifier = DynamicCast<Ipv4FlowClassifier> (flowmonHelper.GetClassifier ());
+  std::map<FlowId, FlowMonitor::FlowStats> stats = flowmon->GetFlowStats ();
+  for (std::map<FlowId, FlowMonitor::FlowStats>::const_iterator i = stats.begin (); i != stats.end (); ++i)
+    {
+          Ipv4FlowClassifier::FiveTuple t = classifier->FindFlow (i->first);
+        if(t.sourceAddress.Get()==Ipv4Address("10.1.1.1").Get())
+                printf("\n %d", t.sourceAddress.Get());
+
+      if ((t.sourceAddress.Get()==Ipv4Address("10.1.1.1").Get()) && (t.destinationAddress.Get() == Ipv4Address("10.1.1.2").Get()))
+      {
+          std::cout << "Flow " << i->first  << " (" << t.sourceAddress << " -> " << t.destinationAddress << ")\n";
+          std::cout << "  Tx Bytes:   " << i->second.txBytes << "\n";
+          std::cout << "  Rx Bytes:   " << i->second.rxBytes << "\n";
+          std::cout << "  Throughput: " << i->second.rxBytes * 8.0 / (i->second.timeLastRxPacket.GetSeconds() - i->second.timeFirstTxPacket.GetSeconds())/1024/1024  << " Mbps\n";
+          //i->second.delayHistogram
+      }
+      else
+      {
+          printf(" \nNO MATCH  ");
+          printf("\nSOurce add: %u and Dest add: %u", t.sourceAddress.Get(), t.destinationAddress.Get());
+      }
+     }
+
+	flowmon->SerializeToXmlFile("new_ns3.flowmon", true, true);
+  
+  Simulator::Destroy ();
+  NS_LOG_INFO ("Done.");
+
+}
+
+
+
+
+
+
